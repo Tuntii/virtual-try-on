@@ -107,7 +107,7 @@ class OpenAiImageBackend(TryOnBackend):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-image-2-2026-04-21",
+        model: str = "gpt-image-2",
         size: str = "auto",
         quality: str = "medium",
     ) -> None:
