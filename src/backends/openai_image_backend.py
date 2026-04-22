@@ -182,8 +182,8 @@ class OpenAiImageBackend(TryOnBackend):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-image-1",
-        size: str = "auto",
+        model: str = "dall-e-2",
+        size: str = "1024x1024",
         quality: str = "medium",
         num_samples: int = 2,
     ) -> None:
@@ -275,14 +275,11 @@ class OpenAiImageBackend(TryOnBackend):
             try:
                 response = self._client.images.edit(
                     model=self.model,
-                    image=[
-                        ("person.png", io.BytesIO(person_png), "image/png"),
-                        ("garment.png", io.BytesIO(garment_png), "image/png"),
-                    ],
+                    image=io.BytesIO(person_png),
                     mask=io.BytesIO(mask_png),
                     prompt=prompt,
-                    size=size,
-                    response_format="b64_json",
+                    n=1,
+                    size="1024x1024",
                 )
                 raw = self._decode_response(response)
                 result_img = Image.open(io.BytesIO(raw)).convert("RGB")
