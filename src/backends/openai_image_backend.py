@@ -282,7 +282,6 @@ class OpenAiImageBackend(TryOnBackend):
                     mask=io.BytesIO(mask_png),
                     prompt=prompt,
                     size=size,
-                    quality=quality,
                     response_format="b64_json",
                 )
                 raw = self._decode_response(response)
