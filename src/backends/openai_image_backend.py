@@ -182,61 +182,100 @@ class OpenAiImageBackend(TryOnBackend):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-image-2",
-        size: str = "1024x1024",
-        quality: str = "medium",
+        model: str = "gpt-image-1",
         num_samples: int = 2,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.model = model
-        self.size = size
-        self.quality = quality
         self.num_samples = max(1, int(num_samples))
-        self._client: Any | None = None
+        self._http: Any | None = None
 
-    def _ensure_client(self) -> None:
-        if self._client is not None:
+    def _resolve_key(self) -> None:
+        """Birden fazla kaynaktan API key okur."""
+        if self._api_key:
+            return
+        self._api_key = os.environ.get("OPENAI_API_KEY", "")
+        if self._api_key:
             return
         try:
-            import httpx  # type: ignore
-            from openai import OpenAI  # type: ignore
-        except ImportError as exc:
-            raise TryOnError(
-                "openai paketi kurulu değil. `pip install openai>=1.0 httpx` ile kurun."
-            ) from exc
-
-        # Key yoksa tekrar dene: önce env var, sonra .streamlit/secrets.toml
-        if not self._api_key:
-            self._api_key = os.environ.get("OPENAI_API_KEY", "")
-        if not self._api_key:
-            try:
-                import tomllib  # type: ignore
-                toml_path = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "..", "..", ".streamlit", "secrets.toml"
-                )
-                with open(os.path.normpath(toml_path), "rb") as f:
-                    self._api_key = tomllib.load(f).get("OPENAI_API_KEY", "")
-            except Exception:
-                pass
+            import tomllib
+            toml_path = os.path.normpath(os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "..", "..", ".streamlit", "secrets.toml"
+            ))
+            with open(toml_path, "rb") as f:
+                self._api_key = tomllib.load(f).get("OPENAI_API_KEY", "")
+        except Exception:
+            pass
         if not self._api_key:
             raise TryOnError(
                 "OpenAI API anahtarı bulunamadı. "
                 ".streamlit/secrets.toml veya OPENAI_API_KEY env değişkenini kontrol edin."
             )
-        self._client = OpenAI(
-            api_key=self._api_key,
-            http_client=httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0)),
+
+    def _ensure_http(self) -> None:
+        if self._http is not None:
+            return
+        self._resolve_key()
+        try:
+            import httpx  # type: ignore
+        except ImportError as exc:
+            raise TryOnError("httpx kurulu değil. `pip install httpx` ile kurun.") from exc
+        # 120s timeout — büyük görüntü yükleme + inference süresi için
+        self._http = httpx.Client(
+            timeout=httpx.Timeout(120.0, connect=30.0),
+            headers={"Authorization": f"Bearer {self._api_key}"},
         )
+
+    def _call_edit_api(self, person_png: bytes, mask_png: bytes, prompt: str) -> bytes:
+        """httpx ile doğrudan /v1/images/edits çağrısı yapar.
+
+        openai SDK yerine doğrudan HTTP kullanılır çünkü SDK
+        gpt-image-1 gibi yeni model isimlerini yerel olarak reddeder.
+        """
+        import httpx  # type: ignore
+
+        files = {
+            "image": ("person.png", io.BytesIO(person_png), "image/png"),
+            "mask":  ("mask.png",   io.BytesIO(mask_png),   "image/png"),
+        }
+        data = {
+            "model": self.model,
+            "prompt": prompt,
+            "n": "1",
+            "size": "1024x1024",
+            "response_format": "b64_json",
+        }
+        try:
+            resp = self._http.post(
+                "https://api.openai.com/v1/images/edits",
+                files=files,
+                data=data,
+            )
+        except httpx.ConnectError as exc:
+            raise TryOnError(
+                f"OpenAI bağlantı hatası: {exc}\n"
+                "API sunucusuna ulaşılamıyor."
+            ) from exc
+
+        if resp.status_code != 200:
+            try:
+                detail = resp.json().get("error", {}).get("message", resp.text)
+            except Exception:
+                detail = resp.text
+            if resp.status_code == 401:
+                raise TryOnError(f"OpenAI API anahtarı geçersiz: {detail}")
+            raise TryOnError(f"OpenAI API hatası ({resp.status_code}): {detail}")
+
+        img_data = resp.json()["data"][0]
+        return base64.b64decode(img_data["b64_json"])
 
     # ------------------------------------------------------------------
     def run(self, request: TryOnRequest) -> TryOnResult:
-        self._ensure_client()
+        self._ensure_http()
 
         person_rgb = request.person_rgb
         options = request.options or {}
-        quality = options.get("quality", self.quality)
-        size = options.get("size", self.size)
         num_samples = int(options.get("num_samples", self.num_samples))
 
         # 1) Torso maskesi
@@ -249,39 +288,25 @@ class OpenAiImageBackend(TryOnBackend):
         torso_resized = _resize_max_gray(torso, 1024, person_rgb.shape[:2])
         mask_png = _square_pad_png(_build_mask_png(torso_resized))
 
-        # 4) Ürün görseli PNG + renk analizi
+        # 4) Garment renk analizi (prompt için)
         garment = ensure_garment_rgba(request.garment_rgba)
         garment = crop_to_alpha(garment)
         g_rgb = garment[:, :, :3].astype(np.float32)
         g_alpha = garment[:, :, 3:4].astype(np.float32) / 255.0
         garment_rgb = (g_rgb * g_alpha + 255.0 * (1.0 - g_alpha)).clip(0, 255).astype(np.uint8)
-        garment_png = _square_pad_rgb_png(_to_png_bytes(_resize_max(garment_rgb, 1024)))
 
-        # Garment baskın renkleri (prompt + skorlama için)
         garment_centers = _dominant_kmeans(garment_rgb, k=3)
         color_hint = _dominant_color_desc(garment_rgb, top_n=2)
+        prompt = options.get("prompt", self._default_prompt(request.garment_name, color_hint))
 
-        prompt = options.get(
-            "prompt", self._default_prompt(request.garment_name, color_hint)
-        )
-
-        # 5) Best-of-N örnekleme: her API çağrısı sequential (model n=1 desteklediğinde
-        #    num_samples doğrudan n= parametresine geçirilebilir)
+        # 5) Best-of-N örnekleme
         candidates: list[np.ndarray] = []
         scores: list[float] = []
         errors: list[str] = []
 
         for attempt in range(num_samples):
             try:
-                response = self._client.images.edit(
-                    model=self.model,
-                    image=io.BytesIO(person_png),
-                    mask=io.BytesIO(mask_png),
-                    prompt=prompt,
-                    n=1,
-                    size="1024x1024",
-                )
-                raw = self._decode_response(response)
+                raw = self._call_edit_api(person_png, mask_png, prompt)
                 result_img = Image.open(io.BytesIO(raw)).convert("RGB")
                 orig_h, orig_w = person_rgb.shape[:2]
                 result_img = result_img.resize((orig_w, orig_h), Image.LANCZOS)
@@ -293,19 +318,6 @@ class OpenAiImageBackend(TryOnBackend):
             except TryOnError:
                 raise
             except Exception as exc:
-                msg = str(exc)
-                if "Connection" in msg or "connect" in msg.lower():
-                    raise TryOnError(
-                        f"OpenAI bağlantı hatası: {exc}\n"
-                        "API sunucusuna ulaşılamıyor. VPN veya proxy gerekli olabilir."
-                    ) from exc
-                if "401" in msg or "authentication" in msg.lower():
-                    raise TryOnError(f"OpenAI API anahtarı geçersiz: {exc}") from exc
-                if "model" in msg.lower() and ("404" in msg or "not found" in msg.lower() or "access" in msg.lower()):
-                    raise TryOnError(
-                        f"gpt-image-1 modeline erişim yok: {exc}\n"
-                        "Bu model Tier-1+ hesap gerektiriyor. OpenAI dashboard'dan kota durumunu kontrol edin."
-                    ) from exc
                 errors.append(f"Deneme {attempt + 1} başarısız: {exc}")
 
         if not candidates:
@@ -335,31 +347,12 @@ class OpenAiImageBackend(TryOnBackend):
             debug={
                 "backend": self.name,
                 "model": self.model,
-                "quality": quality,
-                "size": size,
                 "num_samples": num_samples,
                 "scores": scores,
                 "best_idx": best_idx,
                 "color_hint": color_hint,
             },
         )
-
-    def _decode_response(self, response) -> bytes:
-        """API yanıtından ham PNG/bytes döndürür."""
-        try:
-            img_data = response.data[0]
-            if getattr(img_data, "b64_json", None):
-                return base64.b64decode(img_data.b64_json)
-            elif getattr(img_data, "url", None):
-                import urllib.request
-                with urllib.request.urlopen(img_data.url) as resp:  # noqa: S310
-                    return resp.read()
-            else:
-                raise TryOnError("API yanıtı görüntü içermiyor.")
-        except TryOnError:
-            raise
-        except Exception as exc:
-            raise TryOnError(f"Sonuç decode hatası: {exc}") from exc
 
     @staticmethod
     def _default_prompt(garment_name: str, color_hint: str = "") -> str:
