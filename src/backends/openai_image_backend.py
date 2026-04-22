@@ -182,7 +182,7 @@ class OpenAiImageBackend(TryOnBackend):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-image-2",
+        model: str = "gpt-image-1",
         num_samples: int = 2,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
