@@ -182,7 +182,7 @@ class OpenAiImageBackend(TryOnBackend):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "dall-e-2",
+        model: str = "gpt-image-2",
         size: str = "1024x1024",
         quality: str = "medium",
         num_samples: int = 2,
@@ -364,21 +364,10 @@ class OpenAiImageBackend(TryOnBackend):
     @staticmethod
     def _default_prompt(garment_name: str, color_hint: str = "") -> str:
         name_hint = garment_name.replace("-", " ").replace("_", " ") if garment_name else "giysi"
-        color_line = (
-            f" The garment's dominant colors are {color_hint}."
-            if color_hint
-            else ""
-        )
+        color_line = f" Colors: {color_hint}." if color_hint else ""
         return (
-            f"Virtual try-on: dress the person in the first image with the '{name_hint}' "
-            f"garment shown in the second image.{color_line} "
-            "Requirements: "
-            "(1) Keep the person's face, hair, skin tone, hands, and body shape identical. "
-            "(2) Keep the background and environment completely unchanged. "
-            "(3) Replace ONLY the upper body clothing in the masked torso region. "
-            "(4) Match the garment's exact color, texture, pattern, and design details. "
-            "(5) Simulate realistic fabric draping, wrinkles, and fit as if the person is "
-            "actually wearing the garment. "
-            "(6) Maintain consistent, natural lighting across the entire image. "
-            "The final image must look like a professional fashion photograph."
+            f"Fashion photo: the person is wearing a '{name_hint}' garment.{color_line} "
+            "Keep the person's face, hair, skin, hands, pose, and background exactly the same. "
+            "Replace ONLY the clothing on the upper body in the masked area with the garment. "
+            "Realistic fabric draping, natural lighting, professional fashion photograph look."
         )
