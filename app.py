@@ -66,7 +66,7 @@ def _sidebar_controls() -> dict:
     st.sidebar.header("Hakkında")
     st.sidebar.info(
         "ℹ️ Bu bir **Proof of Concept** uygulamasıdır.\n\n"
-        "gpt-image-1 modelini kullanarak ürün görselini manken fotoğrafına giydiriyor."
+        "Local ve cloud sistemlerinde çalışabiliyor. Prompt iyileştirmeleri yapılmalı, kalite kontrolü için Product Person fit gerekiyor, feedback için denemekten çekinmeyin."
     )
     st.sidebar.divider()
     show_debug = st.sidebar.checkbox("Debug bilgisi göster", value=False)
