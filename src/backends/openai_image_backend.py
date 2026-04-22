@@ -1,6 +1,6 @@
-"""OpenAI gpt-image-1 tabanlı virtual try-on backend.
+"""OpenAI gpt-image-2 tabanlı virtual try-on backend.
 
-Kişi fotoğrafı + ürün görseli → gpt-image-1 images.edit API → giydirilmiş sonuç.
+Kişi fotoğrafı + ürün görseli → gpt-image-2 images.edit API → giydirilmiş sonuç.
 
 Kullanım:
     OPENAI_API_KEY ortam değişkeni set edilmeli, ya da app'te girilmeli.
@@ -175,14 +175,14 @@ def _score_result(
 
 
 class OpenAiImageBackend(TryOnBackend):
-    """gpt-image-1 images.edit ile virtual try-on."""
+    """gpt-image-2 images.edit ile virtual try-on."""
 
     name = "openai-edit"
 
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "dall-e-2",
+        model: str = "gpt-image-2",
         num_samples: int = 2,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -231,7 +231,7 @@ class OpenAiImageBackend(TryOnBackend):
         """httpx ile doğrudan /v1/images/edits çağrısı yapar.
 
         openai SDK yerine doğrudan HTTP kullanılır çünkü SDK
-        gpt-image-1 gibi yeni model isimlerini yerel olarak reddeder.
+        gpt-image-2 gibi yeni model isimlerini yerel olarak reddeder.
         """
         import httpx  # type: ignore
 
@@ -244,6 +244,7 @@ class OpenAiImageBackend(TryOnBackend):
             "prompt": prompt,
             "n": "1",
             "size": "1024x1024",
+            "response_format": "b64_json",
         }
         try:
             resp = self._http.post(
@@ -267,12 +268,7 @@ class OpenAiImageBackend(TryOnBackend):
             raise TryOnError(f"OpenAI API hatası ({resp.status_code}): {detail}")
 
         img_data = resp.json()["data"][0]
-        if img_data.get("b64_json"):
-            return base64.b64decode(img_data["b64_json"])
-        # dall-e-2 varsayılan olarak URL döndürür
-        import urllib.request
-        with urllib.request.urlopen(img_data["url"]) as r:  # noqa: S310
-            return r.read()
+        return base64.b64decode(img_data["b64_json"])
 
     # ------------------------------------------------------------------
     def run(self, request: TryOnRequest) -> TryOnResult:
