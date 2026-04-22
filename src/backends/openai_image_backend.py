@@ -205,13 +205,25 @@ class OpenAiImageBackend(TryOnBackend):
                 "openai paketi kurulu değil. `pip install openai>=1.0 httpx` ile kurun."
             ) from exc
 
+        # Key yoksa tekrar dene: önce env var, sonra .streamlit/secrets.toml
+        if not self._api_key:
+            self._api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not self._api_key:
+            try:
+                import tomllib  # type: ignore
+                toml_path = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "..", "..", ".streamlit", "secrets.toml"
+                )
+                with open(os.path.normpath(toml_path), "rb") as f:
+                    self._api_key = tomllib.load(f).get("OPENAI_API_KEY", "")
+            except Exception:
+                pass
         if not self._api_key:
             raise TryOnError(
                 "OpenAI API anahtarı bulunamadı. "
-                "OPENAI_API_KEY ortam değişkenini set edin veya uygulamada girin."
+                ".streamlit/secrets.toml veya OPENAI_API_KEY env değişkenini kontrol edin."
             )
-        # Uzun süreli yükleme için geniş timeout; büyük görüntü dosyalarında
-        # default 60s timeout 'Connection error' olarak yansır.
         self._client = OpenAI(
             api_key=self._api_key,
             http_client=httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0)),
@@ -267,10 +279,11 @@ class OpenAiImageBackend(TryOnBackend):
                         ("person.png", io.BytesIO(person_png), "image/png"),
                         ("garment.png", io.BytesIO(garment_png), "image/png"),
                     ],
-                    mask=("mask.png", io.BytesIO(mask_png), "image/png"),
+                    mask=io.BytesIO(mask_png),
                     prompt=prompt,
                     size=size,
                     quality=quality,
+                    response_format="b64_json",
                 )
                 raw = self._decode_response(response)
                 result_img = Image.open(io.BytesIO(raw)).convert("RGB")
@@ -292,6 +305,11 @@ class OpenAiImageBackend(TryOnBackend):
                     ) from exc
                 if "401" in msg or "authentication" in msg.lower():
                     raise TryOnError(f"OpenAI API anahtarı geçersiz: {exc}") from exc
+                if "model" in msg.lower() and ("404" in msg or "not found" in msg.lower() or "access" in msg.lower()):
+                    raise TryOnError(
+                        f"gpt-image-1 modeline erişim yok: {exc}\n"
+                        "Bu model Tier-1+ hesap gerektiriyor. OpenAI dashboard'dan kota durumunu kontrol edin."
+                    ) from exc
                 errors.append(f"Deneme {attempt + 1} başarısız: {exc}")
 
         if not candidates:
