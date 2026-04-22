@@ -182,7 +182,7 @@ class OpenAiImageBackend(TryOnBackend):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-image-1",
+        model: str = "dall-e-2",
         num_samples: int = 2,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -244,7 +244,6 @@ class OpenAiImageBackend(TryOnBackend):
             "prompt": prompt,
             "n": "1",
             "size": "1024x1024",
-            "response_format": "b64_json",
         }
         try:
             resp = self._http.post(
@@ -268,7 +267,12 @@ class OpenAiImageBackend(TryOnBackend):
             raise TryOnError(f"OpenAI API hatası ({resp.status_code}): {detail}")
 
         img_data = resp.json()["data"][0]
-        return base64.b64decode(img_data["b64_json"])
+        if img_data.get("b64_json"):
+            return base64.b64decode(img_data["b64_json"])
+        # dall-e-2 varsayılan olarak URL döndürür
+        import urllib.request
+        with urllib.request.urlopen(img_data["url"]) as r:  # noqa: S310
+            return r.read()
 
     # ------------------------------------------------------------------
     def run(self, request: TryOnRequest) -> TryOnResult:
