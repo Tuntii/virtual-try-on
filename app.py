@@ -31,9 +31,9 @@ def _cpu_backend():
     return CpuCompositeBackend()
 
 
-def _openai_backend(api_key: str):
+def _openai_backend(api_key: str, num_samples: int = 2):
     from src.backends.openai_image_backend import OpenAiImageBackend
-    return OpenAiImageBackend(api_key=api_key)
+    return OpenAiImageBackend(api_key=api_key, num_samples=num_samples)
 
 
 def _get_api_key() -> str:
@@ -70,7 +70,16 @@ def _sidebar_controls() -> dict:
     )
     st.sidebar.divider()
     show_debug = st.sidebar.checkbox("Debug bilgisi göster", value=False)
-    return {"show_debug": show_debug}
+    st.sidebar.subheader("Reinforcement")
+    num_samples = st.sidebar.slider(
+        "Örnek sayısı (Best-of-N)",
+        min_value=1,
+        max_value=4,
+        value=2,
+        help="Her manken için kaç farklı sonuç üretilip en iyisi seçilsin? "
+             "Arttırmak kaliteyi iyileştirir fakat daha fazla API çağrısı yapar.",
+    )
+    return {"show_debug": show_debug, "num_samples": num_samples}
 
 
 def _garment_section() -> tuple[bytes | None, str]:
@@ -129,11 +138,11 @@ def _models_section() -> list[tuple[bytes, str]]:
 
 
 def _get_backend(opts: dict) -> TryOnBackend:
-    return _openai_backend(_get_api_key())
+    return _openai_backend(_get_api_key(), num_samples=opts.get("num_samples", 2))
 
 
 def _build_options(opts: dict) -> dict:
-    return {}
+    return {"num_samples": opts.get("num_samples", 2)}
 
 
 def _run_batch(
