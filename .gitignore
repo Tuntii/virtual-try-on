@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.streamlit/secrets.toml
+assets/uploads/
+*.onnx
+.cache/
+.u2net/
