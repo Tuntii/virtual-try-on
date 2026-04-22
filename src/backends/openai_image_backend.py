@@ -182,7 +182,7 @@ class OpenAiImageBackend(TryOnBackend):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-image-2",
+        model: str = "gpt-image-1",
         size: str = "auto",
         quality: str = "medium",
         num_samples: int = 2,
