@@ -182,7 +182,7 @@ class OpenAiImageBackend(TryOnBackend):
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "gpt-image-1",
+        model: str = "gpt-4.1-mini",
         num_samples: int = 2,
     ) -> None:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -227,35 +227,54 @@ class OpenAiImageBackend(TryOnBackend):
             headers={"Authorization": f"Bearer {self._api_key}"},
         )
 
-    def _call_edit_api(self, person_png: bytes, mask_png: bytes, prompt: str) -> bytes:
-        """httpx ile doğrudan /v1/images/edits çağrısı yapar.
+    def _call_responses_api(
+        self,
+        person_png: bytes,
+        garment_png: bytes,
+        prompt: str,
+    ) -> bytes:
+        """/v1/responses + image_generation tool ile çağrı yapar.
 
-        openai SDK yerine doğrudan HTTP kullanılır çünkü SDK
-        gpt-image-2 gibi yeni model isimlerini yerel olarak reddeder.
+        images/edits endpoint'i gpt-image-1 için org doğrulaması istediğinden
+        Responses API'yi kullanıyoruz: multimodal model referans görselleri
+        (kişi + ürün) alır, image_generation tool çıktıyı üretir.
         """
         import httpx  # type: ignore
 
-        files = {
-            "image": ("person.png", io.BytesIO(person_png), "image/png"),
-            "mask":  ("mask.png",   io.BytesIO(mask_png),   "image/png"),
-        }
-        data = {
+        person_b64 = base64.b64encode(person_png).decode("ascii")
+        garment_b64 = base64.b64encode(garment_png).decode("ascii")
+
+        payload = {
             "model": self.model,
-            "prompt": prompt,
-            "n": "1",
-            "size": "1024x1024",
-            "response_format": "b64_json",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt},
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:image/png;base64,{person_b64}",
+                            "detail": "high",
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:image/png;base64,{garment_b64}",
+                            "detail": "high",
+                        },
+                    ],
+                }
+            ],
+            "tools": [{"type": "image_generation"}],
         }
+
         try:
             resp = self._http.post(
-                "https://api.openai.com/v1/images/edits",
-                files=files,
-                data=data,
+                "https://api.openai.com/v1/responses",
+                json=payload,
             )
         except httpx.ConnectError as exc:
             raise TryOnError(
-                f"OpenAI bağlantı hatası: {exc}\n"
-                "API sunucusuna ulaşılamıyor."
+                f"OpenAI bağlantı hatası: {exc}\nAPI sunucusuna ulaşılamıyor."
             ) from exc
 
         if resp.status_code != 200:
@@ -267,8 +286,15 @@ class OpenAiImageBackend(TryOnBackend):
                 raise TryOnError(f"OpenAI API anahtarı geçersiz: {detail}")
             raise TryOnError(f"OpenAI API hatası ({resp.status_code}): {detail}")
 
-        img_data = resp.json()["data"][0]
-        return base64.b64decode(img_data["b64_json"])
+        data = resp.json()
+        # Responses API: output array, image_generation_call tipinde item'ı bul
+        for item in data.get("output", []):
+            if item.get("type") == "image_generation_call" and item.get("result"):
+                return base64.b64decode(item["result"])
+        raise TryOnError(
+            "OpenAI yanıtında image_generation_call bulunamadı. "
+            f"Ham yanıt: {str(data)[:500]}"
+        )
 
     # ------------------------------------------------------------------
     def run(self, request: TryOnRequest) -> TryOnResult:
@@ -278,23 +304,21 @@ class OpenAiImageBackend(TryOnBackend):
         options = request.options or {}
         num_samples = int(options.get("num_samples", self.num_samples))
 
-        # 1) Torso maskesi
+        # 1) Torso maskesi (skorlama için)
         _silhouette, torso = build_torso_mask(person_rgb)
 
-        # 2) Kişi PNG — max 1024px
+        # 2) Kişi PNG — max 1024px, kare pad
         person_png = _square_pad_rgb_png(_to_png_bytes(_resize_max(person_rgb, 1024)))
 
-        # 3) Mask PNG (şeffaf = düzenle = torso alanı)
-        torso_resized = _resize_max_gray(torso, 1024, person_rgb.shape[:2])
-        mask_png = _square_pad_png(_build_mask_png(torso_resized))
-
-        # 4) Garment renk analizi (prompt için)
+        # 3) Garment RGB (alpha'yı beyaz zemine harmanla) + PNG
         garment = ensure_garment_rgba(request.garment_rgba)
         garment = crop_to_alpha(garment)
         g_rgb = garment[:, :, :3].astype(np.float32)
         g_alpha = garment[:, :, 3:4].astype(np.float32) / 255.0
         garment_rgb = (g_rgb * g_alpha + 255.0 * (1.0 - g_alpha)).clip(0, 255).astype(np.uint8)
+        garment_png = _square_pad_rgb_png(_to_png_bytes(_resize_max(garment_rgb, 1024)))
 
+        # 4) Renk analizi + prompt
         garment_centers = _dominant_kmeans(garment_rgb, k=3)
         color_hint = _dominant_color_desc(garment_rgb, top_n=2)
         prompt = options.get("prompt", self._default_prompt(request.garment_name, color_hint))
@@ -306,7 +330,7 @@ class OpenAiImageBackend(TryOnBackend):
 
         for attempt in range(num_samples):
             try:
-                raw = self._call_edit_api(person_png, mask_png, prompt)
+                raw = self._call_responses_api(person_png, garment_png, prompt)
                 result_img = Image.open(io.BytesIO(raw)).convert("RGB")
                 orig_h, orig_w = person_rgb.shape[:2]
                 result_img = result_img.resize((orig_w, orig_h), Image.LANCZOS)
@@ -357,10 +381,15 @@ class OpenAiImageBackend(TryOnBackend):
     @staticmethod
     def _default_prompt(garment_name: str, color_hint: str = "") -> str:
         name_hint = garment_name.replace("-", " ").replace("_", " ") if garment_name else "giysi"
-        color_line = f" Colors: {color_hint}." if color_hint else ""
+        color_line = f" Dominant colors of the garment: {color_hint}." if color_hint else ""
         return (
-            f"Fashion photo: the person is wearing a '{name_hint}' garment.{color_line} "
-            "Keep the person's face, hair, skin, hands, pose, and background exactly the same. "
-            "Replace ONLY the clothing on the upper body in the masked area with the garment. "
-            "Realistic fabric draping, natural lighting, professional fashion photograph look."
+            "You are given TWO reference images: (1) a PERSON photo and (2) a GARMENT "
+            f"product photo ('{name_hint}').{color_line} "
+            "Use the image_generation tool to produce a SINGLE fashion photograph where "
+            "the PERSON from image 1 is wearing the GARMENT from image 2 on their upper body. "
+            "Preserve the person's face, hair, skin tone, hands, pose, body proportions, "
+            "and the entire background EXACTLY as in image 1. "
+            "Only the upper-body clothing should be replaced by the garment from image 2, "
+            "matching its color, pattern, texture, collar, sleeves and silhouette faithfully. "
+            "Realistic fabric draping, natural lighting, professional studio fashion photograph."
         )
