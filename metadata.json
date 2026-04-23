@@ -1,0 +1,6 @@
+{
+  "name": "Virtual Try-On AI",
+  "description": "Upload a model and a garment to generate a photorealistic studio photoshoot.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
