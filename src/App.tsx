@@ -3,48 +3,29 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef } from 'react';
-import { Upload, Image as ImageIcon, Sparkles, Loader2, ArrowRight } from 'lucide-react';
-import { GoogleGenAI } from '@google/genai';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import ImageUpload from './components/ImageUpload';
+import PreviewArea from './components/PreviewArea';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const MAX_VARIATIONS = 6;
 
 export default function App() {
   const [modelImage, setModelImage] = useState<string | null>(null);
   const [modelMime, setModelMime] = useState<string | null>(null);
-  
+
   const [clothingImage, setClothingImage] = useState<string | null>(null);
   const [clothingMime, setClothingMime] = useState<string | null>(null);
-  
+
   const [variations, setVariations] = useState<string[]>([]);
   const [activeVariationIndex, setActiveVariationIndex] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleFile = (
-    e: React.ChangeEvent<HTMLInputElement>,
-    setImage: (b64: string) => void,
-    setMime: (mime: string) => void
-  ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const result = event.target?.result as string;
-      // Extract base64 and mime
-      const [header, base64] = result.split(',');
-      const mime = header.replace('data:', '').replace(';base64', '');
-      setImage(base64);
-      setMime(mime);
-    };
-    reader.readAsDataURL(file);
-  };
-
   const handleGenerate = async (isVariation = false) => {
     if (!modelImage || !clothingImage) return;
-    
+    if (isVariation && variations.length >= MAX_VARIATIONS) return;
+
     setIsGenerating(true);
     setError(null);
     if (!isVariation) {
@@ -53,57 +34,37 @@ export default function App() {
     }
 
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-image-preview',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: modelImage,
-                mimeType: modelMime || 'image/jpeg',
-              },
-            },
-            {
-              inlineData: {
-                data: clothingImage,
-                mimeType: clothingMime || 'image/jpeg',
-              },
-            },
-            {
-              text: 'A high-end professional studio fashion photography shot. The person from the first image is wearing the exact clothing item from the second image. Flawless lighting, clean studio background, highly detailed, photorealistic.',
-            },
-          ],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: '3:4',
-            imageSize: '1K',
-          },
-        },
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          modelImage,
+          modelMime: modelMime ?? 'image/jpeg',
+          clothingImage,
+          clothingMime: clothingMime ?? 'image/jpeg',
+        }),
       });
 
-      let foundImage = false;
-      const parts = response.candidates?.[0]?.content?.parts || [];
-      for (const part of parts) {
-        if (part.inlineData) {
-          const base64 = part.inlineData.data;
-          const newImage = `data:image/png;base64,${base64}`;
-          setVariations(prev => {
-            const next = isVariation ? [...prev, newImage] : [newImage];
-            setActiveVariationIndex(next.length - 1);
-            return next;
-          });
-          foundImage = true;
-          break;
-        }
+      const data = await response.json() as { image?: string; error?: string };
+
+      if (!response.ok) {
+        throw new Error(data.error ?? 'Görsel oluşturma sırasında hata oluştu.');
       }
 
-      if (!foundImage) {
-        throw new Error('No image was returned from the AI. It might have returned text instead.');
+      if (!data.image) {
+        throw new Error('Yapay zeka bir görsel döndürmedi.');
       }
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || 'An error occurred during generation.');
+
+      const newImage = `data:image/png;base64,${data.image}`;
+      setVariations(prev => {
+        const next = isVariation ? [...prev, newImage] : [newImage];
+        setActiveVariationIndex(next.length - 1);
+        return next;
+      });
+
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Görsel oluşturma sırasında hata oluştu.';
+      setError(message);
     } finally {
       setIsGenerating(false);
     }
@@ -122,63 +83,41 @@ export default function App() {
         <div className="hidden sm:flex items-center space-x-6 text-[11px] uppercase tracking-widest text-white/50 font-medium">
           <span className="text-white hover:text-white transition-colors cursor-pointer">Sanal Deneme</span>
           <span className="hover:text-white cursor-pointer transition-colors">Koleksiyonlar</span>
-          <div className="h-4 w-[1px] bg-white/20"></div>
-          <span className="text-white/80">Gemini 3.1 Pro Images</span>
+          <div className="h-4 w-[1px] bg-white/20" />
+          <span className="text-white/80">Gemini AI</span>
         </div>
       </nav>
 
       {/* Main Workspace */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 overflow-y-auto lg:overflow-hidden h-full">    
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 overflow-y-auto lg:overflow-hidden h-full">
         {/* Sidebar Controls */}
         <aside className="lg:col-span-4 xl:col-span-3 border-r border-white/10 bg-[#0A0A0A] p-6 lg:p-8 flex flex-col h-full lg:overflow-y-auto w-full">
           <div className="space-y-8">
-            {/* Upload Section A: Model */}
-            <section>
-              <label className="text-[10px] uppercase tracking-widest text-white/40 mb-3 block">01. Model / Manken</label>
-              <label className="relative w-full aspect-square md:aspect-video lg:aspect-square border border-dashed border-white/20 rounded-lg flex flex-col items-center justify-center bg-white/[0.02] cursor-pointer hover:bg-white/[0.05] transition-colors overflow-hidden group">
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  className="hidden" 
-                  onChange={(e) => handleFile(e, setModelImage, setModelMime)} 
-                />
-                {modelImage ? (
-                  <img src={`data:${modelMime};base64,${modelImage}`} alt="Model" className="w-full h-full object-cover" />
-                ) : (
-                  <>
-                    <ImageIcon className="w-6 h-6 mb-2 text-white/30" strokeWidth={1.5} />
-                    <span className="text-[11px] text-white/30 italic font-serif group-hover:text-white/50 transition-colors">Manken veya Kendi Fotoğrafın</span>
-                  </>
-                )}
-              </label>
-              <div className="mt-2 text-[10px] text-white/40">Önerilen: Stüdyo ışığında çekilmiş net görseller.</div>
-            </section>
-
-            {/* Upload Section B: Garment */}
-            <section>
-              <label className="text-[10px] uppercase tracking-widest text-white/40 mb-3 block">02. Ürün Görseli</label>
-              <label className="relative w-full aspect-square md:aspect-video lg:aspect-square border border-dashed border-white/20 rounded-lg flex flex-col items-center justify-center bg-white/[0.02] cursor-pointer hover:bg-white/[0.05] transition-colors overflow-hidden group">
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  className="hidden" 
-                  onChange={(e) => handleFile(e, setClothingImage, setClothingMime)} 
-                />
-                {clothingImage ? (
-                  <img src={`data:${clothingMime};base64,${clothingImage}`} alt="Clothing" className="w-full h-full object-cover" />
-                ) : (
-                  <>
-                    <Upload className="w-6 h-6 mb-2 text-white/30" strokeWidth={1.5} />
-                    <span className="text-[11px] text-white/30 italic font-serif group-hover:text-white/50 transition-colors">T-shirt veya Üst Giyim</span>
-                  </>
-                )}
-              </label>
-              <div className="mt-2 text-[10px] text-white/40">Önerilen: Temiz arka plana sahip kıyafet.</div>
-            </section>
+            <ImageUpload
+              step="01"
+              label="Model / Manken"
+              image={modelImage}
+              mime={modelMime}
+              placeholder="Manken veya Kendi Fotoğrafın"
+              hint="Önerilen: Stüdyo ışığında çekilmiş net görseller."
+              onFile={(b64, m) => { setModelImage(b64); setModelMime(m); }}
+              onClear={() => { setModelImage(null); setModelMime(null); }}
+            />
+            <ImageUpload
+              step="02"
+              label="Ürün Görseli"
+              image={clothingImage}
+              mime={clothingMime}
+              placeholder="T-shirt veya Üst Giyim"
+              hint="Önerilen: Temiz arka plana sahip kıyafet."
+              onFile={(b64, m) => { setClothingImage(b64); setClothingMime(m); }}
+              onClear={() => { setClothingImage(null); setClothingMime(null); }}
+            />
           </div>
 
           <div className="mt-8 lg:mt-auto pt-8 space-y-4">
             <button
+              type="button"
               onClick={() => handleGenerate(false)}
               disabled={!modelImage || !clothingImage || isGenerating}
               className="w-full py-4 bg-white text-black text-[11px] uppercase tracking-[0.2em] font-bold hover:bg-white/90 transition-all disabled:opacity-30 disabled:hover:bg-white disabled:cursor-not-allowed flex items-center justify-center gap-2"
